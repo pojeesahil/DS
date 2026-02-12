@@ -1,7 +1,7 @@
-#Installation and Setup
+# Installation and Setup
 The system is designed to run in a local Python environment.
 
-##1. Clone the Repository
+## 1. Clone the Repository
 Download the source code to your local machine:
 go to your vscode terminal and type
 Bash
@@ -15,7 +15,7 @@ Bash
 ```
 pip install -r requirements.txt
 ```
-**Requirements:**
+** Requirements: **
 
 earthengine-api: Google Earth Engine interface.
 
@@ -27,7 +27,7 @@ numpy: Numerical data processing.
 
 matplotlib: Results visualization and mapping.
 
-3. Google Earth Engine Authentication
+## 3. Google Earth Engine Authentication
 The project requires access to Google’s Earth Engine API. Upon the first execution of the script, a browser window will open to authorize the application.
 
 Log in with a Google account associated with a registered Earth Engine project.
@@ -38,7 +38,7 @@ Run the analysis using:
 Bash
 `python main.py`
 
-##Output Interpretation
+## Output Interpretation
 The analysis generates a dual-pane visualization. The first pane displays the Sentinel-2 RGB satellite composite, while the second pane displays the AI-generated risk map.
 
 The risk map follows a three-tier classification:
