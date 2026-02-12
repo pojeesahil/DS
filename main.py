@@ -23,10 +23,10 @@ SIZE_METERS = 2750
 # --- PART 1: GOOGLE EARTH ENGINE SETUP ---
 print("Authenticating with Google Earth Engine...")
 try:
-    ee.Initialize(project='gen-lang-client-0426799622')
+    ee.Initialize()
 except:
     ee.Authenticate()
-    ee.Initialize(project='gen-lang-client-0426799622')
+    ee.Initialize()
 
 # Create Dynamic ROI (Box around your point)
 point = ee.Geometry.Point([LON, LAT])
