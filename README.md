@@ -67,3 +67,13 @@ LS (Slope Length and Steepness): Generated from NASA’s SRTM Digital Elevation 
 C (Cover Management): Calculated using the Normalized Difference Vegetation Index (NDVI) from Sentinel-2 imagery to evaluate how vegetation protects the soil surface.
 
 P (Support Practices): Evaluated as a constant in this implementation, assuming natural land management.To ensure accuracy, the model incorporates an environmental mask using the ESA WorldCover dataset to exclude non-soil surfaces such as urban infrastructure, permanent water bodies, and snow.
+## Run Instructions
+
+### Train the model
+python train.py
+
+### Predict erosion map
+python predict.py
+
+### Run using main menu
+python main.py
