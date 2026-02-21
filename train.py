@@ -9,42 +9,45 @@ import concurrent.futures
 import os
 
 # ==========================================
-# 📍 CONFIGURATION & SETTINGS
+# 📍 PROJECT SETUP
 # ==========================================
 MY_PROJECT = "gen-lang-client-0426799622"
-SIZE_METERS = 2750
+SIZE_METERS = 2750  # ~5.5km x 5.5km bounding box
 MODEL_PATH = "models/erosion_model_hybrid.pth"
 os.makedirs("models", exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🚀 Running on: {device}")
+print(f"🚀 Booting up AI on: {device}")
 
-# 10 Diverse Random Locations in Maharashtra
+# ==========================================
+# 🌍 THE "BALANCED DIET" LOCATIONS
+# ==========================================
 LOCATIONS = [
-    (19.93, 73.53),  # Nashik (Hilly)
-    (18.52, 73.85),  # Pune (Western Ghats)
-    (21.14, 79.08),  # Nagpur (Forest/Plains)
-    (16.99, 73.30),  # Ratnagiri (Coastal)
-    (20.93, 77.75),  # Amravati (Deccan plateau)
-    (17.68, 73.98),  # Satara (Steep Ghats)
-    (19.95, 79.29),  # Chandrapur (Dense Forest)
-    (16.70, 74.24),  # Kolhapur (Mixed)
-    (19.87, 75.34),  # Chhatrapati Sambhajinagar (Dry)
-    (18.23, 73.44),  # Raigad (Heavy rain, steep)
+    # --- STABLE REGIONS ---
+    (19.93, 73.53),  # Nashik
+    (21.14, 79.08),  # Nagpur 
+    (16.99, 73.30),  # Ratnagiri
+    (20.93, 77.75),  # Amravati 
+    (19.87, 75.34),  # Chhatrapati Sambhajinagar 
+    
+    # --- EROSION HOTSPOTS ---
+    (19.16, 73.68),  # Malin Village 
+    (18.08, 73.42),  # Mahad 
+    (17.92, 73.56),  # Ambenali Ghat 
+    (19.33, 73.76),  # Malshej Ghat 
+    (17.38, 73.74),  # Patan / Koyna Catchment 
 ]
 
 def initialize_ee():
     try:
-        print(f"Attempting to initialize with project: {MY_PROJECT}")
         ee.Initialize(project=MY_PROJECT)
     except Exception:
-        print("Authentication required. Opening browser...")
         ee.Authenticate()
         ee.Initialize(project=MY_PROJECT)
     print("✅ Earth Engine Initialized.\n")
 
 def get_hybrid_training_data_batch():
-    print(f"🌍 Fetching {len(LOCATIONS)} Locations SIMULTANEOUSLY... 🚀")
+    print(f"🌍 Fetching Data for our 10 locations simultaneously... hold tight! 🚀")
 
     X_list, Y_unified_list = [], []
 
@@ -59,40 +62,45 @@ def get_hybrid_training_data_batch():
             point = ee.Geometry.Point([lon, lat])
             roi = point.buffer(SIZE_METERS).bounds()
 
-            # --- 1. SMART MASK ---
+            # --- 1. SMART MASKING ---
             landcover = ee.ImageCollection("ESA/WorldCover/v100").first().clip(roi)
-            # 40=Cropland, 50=Built-up, 80=Water, 100=Moss/Snow
-            valid_mask = landcover.neq(40).And(landcover.neq(50)).And(landcover.neq(80)).And(landcover.neq(100))
+            valid_mask = landcover.neq(50).And(landcover.neq(80)).And(landcover.neq(100))
+            
+            is_farm = landcover.eq(40) 
+            is_wild = landcover.neq(40).And(valid_mask) 
 
-            # --- 2. STATIC FACTORS ---
+            # --- 2. THE GEOGRAPHY ---
             dem = ee.Image("USGS/SRTMGL1_003").clip(roi)
             slope_deg = ee.Terrain.slope(dem)
-            LS = slope_deg.divide(100).pow(1.3).multiply(2).rename('LS')
+            LS = slope_deg.divide(100).pow(1.3).multiply(2).rename('LS') 
 
             soil = ee.Image("OpenLandMap/SOL/SOL_TEXTURE-CLASS_USDA-TT_M/v02").clip(roi)
             K = soil.remap([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
                            [0.05, 0.15, 0.2, 0.25, 0.3, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6], 0.3).rename('K')
             K_corrected = K.updateMask(valid_mask).unmask(0)
 
-            # --- 3. PAST DATA (2019) ---
+            # --- 3. THE 2019 BASELINE ---
             s2_2019 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
                        .filterBounds(roi).filterDate('2019-01-01', '2019-06-30')
                        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
                        .map(mask_s2_clouds).median().clip(roi))
             
             rain_2019 = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate('2019-01-01', '2019-12-31').sum().clip(roi)
-            R_2019 = rain_2019.pow(1.61).multiply(0.0483).rename('R')
+            R_2019 = rain_2019.pow(1.61).multiply(0.0483).rename('R') 
             
             ndvi_2019 = s2_2019.normalizedDifference(['B8', 'B4'])
             C_2019 = ndvi_2019.expression("exp(-2 * (ndvi / (1 - ndvi)))", {'ndvi': ndvi_2019}).rename('C')
             C_2019 = C_2019.where(C_2019.gt(1), 1).where(C_2019.lt(0), 0)
 
-            # --- 4. CALCULATE THEORETICAL RUSLE ---
             soil_loss_2019 = R_2019.multiply(K_corrected).multiply(LS).multiply(C_2019)
-            y_rusle = ee.Image(0).where(soil_loss_2019.gte(5).And(soil_loss_2019.lt(20)), 1) \
-                                 .where(soil_loss_2019.gte(20), 2)
+            
+            # --- 4. THEORETICAL RUSLE (The "Buffer Ring" fix) ---
+            # Squeezed the Yellow floor up to 70. 
+            # Red ceiling remains untouched at 80 to preserve our perfect 1% danger zone!
+            y_rusle = ee.Image(0).where(soil_loss_2019.gte(70).And(soil_loss_2019.lt(80)), 1) \
+                                 .where(soil_loss_2019.gte(80), 2)
 
-            # --- 5. CALCULATE REAL DEGRADATION (2019 vs 2024) ---
+            # --- 5. THE REALITY CHECK (2024 Data) ---
             s2_2024 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
                        .filterBounds(roi).filterDate('2024-01-01', '2024-06-30')
                        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
@@ -100,14 +108,18 @@ def get_hybrid_training_data_batch():
             ndvi_2024 = s2_2024.normalizedDifference(['B8', 'B4'])
             ndvi_loss = ndvi_2019.subtract(ndvi_2024)
 
-            # --- 6. CREATE THE UNIFIED SMART LABEL ---
+            # --- 6. THE UNIFIED LABEL ---
             y_unified = ee.Image(0)
-            # Rule 1: If RUSLE says there is risk, mark it Yellow (Vulnerable)
-            y_unified = y_unified.where(y_rusle.gte(1), 1)
-            # Rule 2: If RUSLE says High Risk AND vegetation actually dropped, mark Red (Danger)
-            y_unified = y_unified.where(y_rusle.eq(2).And(ndvi_loss.gt(0.05)), 2)
             
-            # Apply our mask (Ignore cities, water, farms)
+            # Step 1: Base Vulnerability
+            y_unified = y_unified.where(y_rusle.gte(1), 1) 
+            
+            # Step 2: Wildland Rule (Math high + 15% veg drop)
+            y_unified = y_unified.where(is_wild.And(y_rusle.eq(2)).And(ndvi_loss.gt(0.15)), 2)
+            
+            # Step 3: Farmland Rule (Catastrophic math only, ignore harvest)
+            y_unified = y_unified.where(is_farm.And(soil_loss_2019.gt(150)), 2)
+            
             y_unified = y_unified.updateMask(valid_mask).unmask(0).rename('y_unified')
 
             # --- 7. STACK & DOWNLOAD ---
@@ -117,22 +129,19 @@ def get_hybrid_training_data_batch():
             pixel_data = geemap.ee_to_numpy(feature_stack, region=roi, scale=30)
             pixel_data = np.nan_to_num(pixel_data, nan=0.0)
 
-            # Convert to Tensor and resize to 192x192 to allow batched training
             data_tensor = torch.from_numpy(pixel_data).float().permute(2, 0, 1).unsqueeze(0) 
             data_tensor = F.interpolate(data_tensor, size=(192, 192), mode='nearest')
             
-            print(f"    ✅ Finished region {lat}, {lon}")
+            print(f"    ✅ Finished downloading region {lat}, {lon}")
             return data_tensor
             
         except Exception as e:
             print(f"    ⚠️ Failed to download region {lat}, {lon}: {e}")
             return None
 
-    # MULTITHREADING
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(process_location, LOCATIONS))
 
-    # Collect successful results
     for tensor in results:
         if tensor is not None:
             X_list.append(tensor[:, :5, :, :])
@@ -141,12 +150,17 @@ def get_hybrid_training_data_batch():
     X_batch = torch.cat(X_list, dim=0).to(device)         
     Y_unified_batch = torch.cat(Y_unified_list, dim=0).to(device)
 
-    print(f"\n✅ Training batch ready! (Size: {X_batch.shape[0]})")
+    unique, counts = torch.unique(Y_unified_batch, return_counts=True)
+    pixel_counts = dict(zip(unique.tolist(), counts.tolist()))
+    print(f"\n📊 PIXEL DISTRIBUTION IN TRAINING DATA:")
+    print(f"  🟢 Green (Safe): {pixel_counts.get(0, 0)} pixels")
+    print(f"  🟡 Yellow (Vuln): {pixel_counts.get(1, 0)} pixels")
+    print(f"  🔴 Red (Danger): {pixel_counts.get(2, 0)} pixels")
+
     return X_batch, Y_unified_batch.squeeze(1)
 
-
 # ==========================================
-# 🧠 U-NET ARCHITECTURE
+# 🧠 U-NET ARCHITECTURE 
 # ==========================================
 class MultiClassUNet(nn.Module):
     def __init__(self, in_channels, num_classes):
@@ -175,21 +189,35 @@ class MultiClassUNet(nn.Module):
         out = self.dec1(d1)
         return self.final(out)
 
+# ==========================================
+# 📐 FOCAL LOSS FUNCTION
+# ==========================================
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
 
 # ==========================================
-# 🏋️ UNIFIED BATCH TRAINING LOOP
+# 🏋️ THE TRAINING LOOP
 # ==========================================
 def train_unified_model(X, Y_unified):
     model = MultiClassUNet(in_channels=5, num_classes=3).to(device)
     
-    # CLASS WEIGHTS: Force the AI to care about Yellow (5x) and Red (10x) over Green (1x)
-    weights = torch.tensor([1.0, 5.0, 10.0], dtype=torch.float).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights)
+    # ⚖️ NEUTRAL WEIGHTS
+    weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float).to(device)
     
+    criterion = FocalLoss(alpha=weights, gamma=2.0)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     
-    print("\n🚀 Training Smarter Unified Model (RUSLE + Reality)...")
-    for epoch in range(151): # 150 Epochs for better convergence
+    print("\n🚀 Training Model (Refined Buffer Zone Edition)...")
+    for epoch in range(151): 
         optimizer.zero_grad()
         outputs = model(X)
         loss = criterion(outputs, Y_unified)
@@ -200,8 +228,7 @@ def train_unified_model(X, Y_unified):
             print(f"  Epoch {epoch} | Loss: {loss.item():.4f}")
 
     torch.save(model.state_dict(), MODEL_PATH)
-    print(f"\n✅ Smarter Model saved successfully to: {MODEL_PATH}")
-
+    print(f"\n✅ Perfected Model saved successfully to: {MODEL_PATH}")
 
 if __name__ == "__main__":
     initialize_ee()
