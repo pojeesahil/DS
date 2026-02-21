@@ -4,20 +4,34 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
+import concurrent.futures
 import os
 
-# Location (can be changed later)
-LAT = 19.93
-LON = 73.53
-
+# ==========================================
+# 📍 CONFIGURATION & SETTINGS
+# ==========================================
 MY_PROJECT = "gen-lang-client-0426799622"
 SIZE_METERS = 2750
-
-MODEL_PATH = "models/erosion_model.pth"
+MODEL_PATH = "models/erosion_model_hybrid.pth"
+os.makedirs("models", exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"🚀 Running on: {device}")
 
+# 10 Diverse Random Locations in Maharashtra
+LOCATIONS = [
+    (19.93, 73.53),  # Nashik (Hilly)
+    (18.52, 73.85),  # Pune (Western Ghats)
+    (21.14, 79.08),  # Nagpur (Forest/Plains)
+    (16.99, 73.30),  # Ratnagiri (Coastal)
+    (20.93, 77.75),  # Amravati (Deccan plateau)
+    (17.68, 73.98),  # Satara (Steep Ghats)
+    (19.95, 79.29),  # Chandrapur (Dense Forest)
+    (16.70, 74.24),  # Kolhapur (Mixed)
+    (19.87, 75.34),  # Chhatrapati Sambhajinagar (Dry)
+    (18.23, 73.44),  # Raigad (Heavy rain, steep)
+]
 
 def initialize_ee():
     try:
@@ -27,147 +41,169 @@ def initialize_ee():
         print("Authentication required. Opening browser...")
         ee.Authenticate()
         ee.Initialize(project=MY_PROJECT)
-    print("✅ Earth Engine Initialized.")
+    print("✅ Earth Engine Initialized.\n")
 
+def get_hybrid_training_data_batch():
+    print(f"🌍 Fetching {len(LOCATIONS)} Locations SIMULTANEOUSLY... 🚀")
 
-def get_training_data():
-    print("Extracting satellite data and calculating factors...")
+    X_list, Y_unified_list = [], []
 
-    point = ee.Geometry.Point([LON, LAT])
-    roi = point.buffer(SIZE_METERS).bounds()
-
-    # 1. Rainfall (R)
-    rain = (
-        ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-        .filterDate("2023-01-01", "2023-12-31")
-        .sum()
-        .clip(roi)
-    )
-    R = rain.pow(1.61).multiply(0.0483).rename("R")
-
-    # 2. Soil Erodibility (K)
-    soil = ee.Image("OpenLandMap/SOL/SOL_TEXTURE-CLASS_USDA-TT_M/v02").clip(roi)
-    K = soil.remap(
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-        [0.05, 0.15, 0.2, 0.25, 0.3, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6],
-        0.3,
-    ).rename("K")
-
-    # 3. Slope (LS)
-    dem = ee.Image("USGS/SRTMGL1_003").clip(roi)
-    slope_deg = ee.Terrain.slope(dem)
-    LS = slope_deg.divide(100).pow(1.3).multiply(2).rename("LS")
-
-    # 4. Vegetation (C)
     def mask_s2_clouds(image):
-        qa = image.select("QA60")
+        qa = image.select('QA60')
         mask = qa.bitwiseAnd(1 << 10).eq(0).And(qa.bitwiseAnd(1 << 11).eq(0))
         return image.updateMask(mask).divide(10000)
 
-    s2 = (
-        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-        .filterBounds(roi)
-        .filterDate("2023-01-01", "2023-06-30")
-        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
-        .map(mask_s2_clouds)
-        .median()
-        .clip(roi)
-    )
+    def process_location(lat_lon_tuple):
+        lat, lon = lat_lon_tuple
+        try:
+            point = ee.Geometry.Point([lon, lat])
+            roi = point.buffer(SIZE_METERS).bounds()
 
-    ndvi = s2.normalizedDifference(["B8", "B4"])
-    C = ndvi.expression("exp(-2 * (ndvi / (1 - ndvi)))", {"ndvi": ndvi}).rename("C")
-    C = C.where(C.gt(1), 1).where(C.lt(0), 0)
+            # --- 1. SMART MASK ---
+            landcover = ee.ImageCollection("ESA/WorldCover/v100").first().clip(roi)
+            # 40=Cropland, 50=Built-up, 80=Water, 100=Moss/Snow
+            valid_mask = landcover.neq(40).And(landcover.neq(50)).And(landcover.neq(80)).And(landcover.neq(100))
 
-    # 5. Masking (Urban, Water, Snow)
-    landcover = ee.ImageCollection("ESA/WorldCover/v100").first().clip(roi)
-    valid_mask = landcover.neq(50).And(landcover.neq(80)).And(landcover.neq(100))
-    K_corrected = K.updateMask(valid_mask).unmask(0)
+            # --- 2. STATIC FACTORS ---
+            dem = ee.Image("USGS/SRTMGL1_003").clip(roi)
+            slope_deg = ee.Terrain.slope(dem)
+            LS = slope_deg.divide(100).pow(1.3).multiply(2).rename('LS')
 
-    # 6. Soil Loss Calculation
-    soil_loss = R.multiply(K_corrected).multiply(LS).multiply(C)
+            soil = ee.Image("OpenLandMap/SOL/SOL_TEXTURE-CLASS_USDA-TT_M/v02").clip(roi)
+            K = soil.remap([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                           [0.05, 0.15, 0.2, 0.25, 0.3, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6], 0.3).rename('K')
+            K_corrected = K.updateMask(valid_mask).unmask(0)
 
-    class_map = (
-        ee.Image(0)
-        .where(soil_loss.gte(5).And(soil_loss.lt(20)), 1)
-        .where(soil_loss.gte(20), 2)
-        .rename("class")
-    )
+            # --- 3. PAST DATA (2019) ---
+            s2_2019 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                       .filterBounds(roi).filterDate('2019-01-01', '2019-06-30')
+                       .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                       .map(mask_s2_clouds).median().clip(roi))
+            
+            rain_2019 = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate('2019-01-01', '2019-12-31').sum().clip(roi)
+            R_2019 = rain_2019.pow(1.61).multiply(0.0483).rename('R')
+            
+            ndvi_2019 = s2_2019.normalizedDifference(['B8', 'B4'])
+            C_2019 = ndvi_2019.expression("exp(-2 * (ndvi / (1 - ndvi)))", {'ndvi': ndvi_2019}).rename('C')
+            C_2019 = C_2019.where(C_2019.gt(1), 1).where(C_2019.lt(0), 0)
 
-    inputs = s2.select(["B4", "B3", "B2", "B8"]).addBands(slope_deg.divide(90))
-    feature_stack = inputs.addBands(class_map)
+            # --- 4. CALCULATE THEORETICAL RUSLE ---
+            soil_loss_2019 = R_2019.multiply(K_corrected).multiply(LS).multiply(C_2019)
+            y_rusle = ee.Image(0).where(soil_loss_2019.gte(5).And(soil_loss_2019.lt(20)), 1) \
+                                 .where(soil_loss_2019.gte(20), 2)
 
-    print("Downloading pixels to NumPy... (this may take a minute)")
-    pixel_data = geemap.ee_to_numpy(feature_stack, region=roi, scale=30)
-    pixel_data = np.nan_to_num(pixel_data, nan=0.0)
+            # --- 5. CALCULATE REAL DEGRADATION (2019 vs 2024) ---
+            s2_2024 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                       .filterBounds(roi).filterDate('2024-01-01', '2024-06-30')
+                       .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                       .map(mask_s2_clouds).median().clip(roi))
+            ndvi_2024 = s2_2024.normalizedDifference(['B8', 'B4'])
+            ndvi_loss = ndvi_2019.subtract(ndvi_2024)
 
-    data_tensor = torch.from_numpy(pixel_data).float().permute(2, 0, 1)
+            # --- 6. CREATE THE UNIFIED SMART LABEL ---
+            y_unified = ee.Image(0)
+            # Rule 1: If RUSLE says there is risk, mark it Yellow (Vulnerable)
+            y_unified = y_unified.where(y_rusle.gte(1), 1)
+            # Rule 2: If RUSLE says High Risk AND vegetation actually dropped, mark Red (Danger)
+            y_unified = y_unified.where(y_rusle.eq(2).And(ndvi_loss.gt(0.05)), 2)
+            
+            # Apply our mask (Ignore cities, water, farms)
+            y_unified = y_unified.updateMask(valid_mask).unmask(0).rename('y_unified')
 
-    X = data_tensor[:5, :, :].unsqueeze(0).to(device)
-    Y = data_tensor[5, :, :].long().unsqueeze(0).to(device)
+            # --- 7. STACK & DOWNLOAD ---
+            inputs = s2_2019.select(['B4', 'B3', 'B2', 'B8']).addBands(slope_deg.divide(90))
+            feature_stack = inputs.addBands(y_unified)
 
-    return X, Y
+            pixel_data = geemap.ee_to_numpy(feature_stack, region=roi, scale=30)
+            pixel_data = np.nan_to_num(pixel_data, nan=0.0)
+
+            # Convert to Tensor and resize to 192x192 to allow batched training
+            data_tensor = torch.from_numpy(pixel_data).float().permute(2, 0, 1).unsqueeze(0) 
+            data_tensor = F.interpolate(data_tensor, size=(192, 192), mode='nearest')
+            
+            print(f"    ✅ Finished region {lat}, {lon}")
+            return data_tensor
+            
+        except Exception as e:
+            print(f"    ⚠️ Failed to download region {lat}, {lon}: {e}")
+            return None
+
+    # MULTITHREADING
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(process_location, LOCATIONS))
+
+    # Collect successful results
+    for tensor in results:
+        if tensor is not None:
+            X_list.append(tensor[:, :5, :, :])
+            Y_unified_list.append(tensor[:, 5, :, :].long())
+
+    X_batch = torch.cat(X_list, dim=0).to(device)         
+    Y_unified_batch = torch.cat(Y_unified_list, dim=0).to(device)
+
+    print(f"\n✅ Training batch ready! (Size: {X_batch.shape[0]})")
+    return X_batch, Y_unified_batch.squeeze(1)
 
 
+# ==========================================
+# 🧠 U-NET ARCHITECTURE
+# ==========================================
 class MultiClassUNet(nn.Module):
     def __init__(self, in_channels, num_classes):
         super(MultiClassUNet, self).__init__()
         self.enc1 = self.conv_block(in_channels, 16)
         self.enc2 = self.conv_block(16, 32)
         self.pool = nn.MaxPool2d(2)
-        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         self.dec1 = self.conv_block(32 + 16, 16)
         self.final = nn.Conv2d(16, num_classes, kernel_size=1)
 
     def conv_block(self, in_c, out_c):
         return nn.Sequential(
             nn.Conv2d(in_c, out_c, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(out_c),
+            nn.ReLU(), nn.BatchNorm2d(out_c),
             nn.Conv2d(out_c, out_c, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(out_c),
+            nn.ReLU(), nn.BatchNorm2d(out_c),
         )
 
     def forward(self, x):
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
         d1 = self.up(e2)
-
-        if d1.size() != e1.size():
-            d1 = torch.nn.functional.interpolate(d1, size=e1.shape[2:])
-
+        if d1.size() != e1.size(): d1 = F.interpolate(d1, size=e1.shape[2:])
         d1 = torch.cat([d1, e1], dim=1)
         out = self.dec1(d1)
         return self.final(out)
 
 
-def train_model(X, Y):
+# ==========================================
+# 🏋️ UNIFIED BATCH TRAINING LOOP
+# ==========================================
+def train_unified_model(X, Y_unified):
     model = MultiClassUNet(in_channels=5, num_classes=3).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
-
-    print("\nStarting Training...")
-    for epoch in range(101):
+    
+    # CLASS WEIGHTS: Force the AI to care about Yellow (5x) and Red (10x) over Green (1x)
+    weights = torch.tensor([1.0, 5.0, 10.0], dtype=torch.float).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights)
+    
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
+    
+    print("\n🚀 Training Smarter Unified Model (RUSLE + Reality)...")
+    for epoch in range(151): # 150 Epochs for better convergence
         optimizer.zero_grad()
         outputs = model(X)
-        loss = criterion(outputs, Y)
+        loss = criterion(outputs, Y_unified)
         loss.backward()
         optimizer.step()
+        
+        if epoch % 25 == 0:
+            print(f"  Epoch {epoch} | Loss: {loss.item():.4f}")
 
-        if epoch % 20 == 0:
-            print(f"Epoch {epoch} | Loss: {loss.item():.4f}")
-
-    return model
-
-
-def save_model(model):
-    os.makedirs("models", exist_ok=True)
     torch.save(model.state_dict(), MODEL_PATH)
-    print(f"✅ Model saved at: {MODEL_PATH}")
+    print(f"\n✅ Smarter Model saved successfully to: {MODEL_PATH}")
 
 
 if __name__ == "__main__":
     initialize_ee()
-    X, Y = get_training_data()
-    model = train_model(X, Y)
-    save_model(model)
+    X, Y_unified = get_hybrid_training_data_batch()
+    train_unified_model(X, Y_unified)
