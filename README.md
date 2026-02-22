@@ -15,6 +15,9 @@ Bash
 ```
 pip install -r requirements.txt
 ```
+
+install jupyter notebook extension in vscode preferably
+
 **Requirements:**
 
 earthengine-api: Google Earth Engine interface.
@@ -34,46 +37,50 @@ Log in with a Google account associated with a registered Earth Engine project.
 
 Select the appropriate Cloud Project ID when prompted.
 
-Run the analysis using:
-Bash
-`python main.py`
+Run the analysis using either:
+1)manually running predict.ipynb in vscode
+2)Running predict.ipynb on google collab in broswer
+
+# Soil Erosion Detection using RUSLE, Time-Series Satellite Data, and Deep Learning
+
+This repository provides a quantitative approach to identifying soil erosion risk by integrating the **Revised Universal Soil Loss Equation (RUSLE)** with multi-year time-series satellite imagery and deep learning. By leveraging Google Earth Engine for environmental data and PyTorch for spatial analysis, this system evaluates terrain to classify genuine landscape degradation risks.
+
+## Overview
+
+The project operates on a hybrid "Theory plus Reality" model. It calculates a scientific baseline for soil loss based on environmental factors (theoretical risk) and cross-references this with a five-year historical analysis of actual vegetation loss (observed reality). This dual-verification data trains a **U-Net convolutional neural network** to identify high-risk areas from multispectral satellite data and topographic slope, filtering out seasonal noise.
+
+## Technical Methodology
+
+The system quantifies soil loss ($A$) using the standard RUSLE formula:
+
+$$A = R * K * LS * C * P$$
+
+* **R (Rainfall Erosivity):** Derived from CHIRPS daily precipitation data to measure the kinetic energy of rainfall.
+* **K (Soil Erodibility):** Calculated from OpenLandMap soil texture classes, representing soil particle detachment susceptibility.
+* **LS (Slope Length and Steepness):** Generated from the USGS SRTM Digital Elevation Model to account for topographic effects on runoff velocity.
+* **C (Cover Management):** Calculated using NDVI from Sentinel-2 imagery to evaluate surface protection by vegetation.
+* **P (Support Practices):** Evaluated as a constant, assuming natural land management.
+
+### Split-Logic Processing
+To ensure accuracy across diverse landscapes, the model employs specialized logic based on the **ESA WorldCover** dataset:
+* **Wildlands and Forests:** Classification requires both a severe mathematical RUSLE score and a significant historical drop in NDVI (10%+).
+* **Agricultural Lands:** To avoid false alarms caused by standard crop harvesting cycles, farmlands are evaluated strictly on physical topography and rainfall thresholds.
+* **Masking:** Urban infrastructure, permanent water bodies, and snow are excluded to prevent statistical bias.
 
 ## Output Interpretation
-The analysis generates a dual-pane visualization. The first pane displays the Sentinel-2 RGB satellite composite, while the second pane displays the AI-generated risk map.
 
-The risk map follows a three-tier classification:
+The analysis generates a three-pane visualization:
+1.  **Satellite View:** A true-color RGB composite of the selected region.
+2.  **Theoretical RUSLE Baseline:** The raw mathematical calculation highlighting all vulnerable slopes.
+3.  **Hybrid AI Inference:** The finalized neural network prediction pinpointing actual, confirmed degradation.
 
-Green (Stable): Minimal soil loss (less than 5 tons/hectare/year).
+### Risk Classification
+* **Green (Stable):** Minimal calculated soil loss or stable vegetation cover.
+* **Yellow (Vulnerable):** High-tension mathematical buffer zones acting as a warning tier.
+* **Red (Critical):** High-risk zones requiring immediate intervention, exhibiting both topographical vulnerability and proven historical degradation.
 
-Yellow (Moderate): Areas requiring monitoring (5 to 20 tons/hectare/year).
-
-Red (Critical): High-risk zones requiring immediate intervention (greater than 20 tons/hectare/year).
-
-Non-soil areas such as urban centers and water bodies are automatically masked and displayed as null values to prevent statistical bias.
-
-## Soil Erosion Detection using RUSLE and Deep LearningT
-his repository provides a quantitative approach to identifying soil erosion risk by integrating the Revised Universal Soil Loss Equation (RUSLE) with satellite imagery and neural networks. 
-By leveraging Google Earth Engine for environmental data and PyTorch for spatial analysis, this system classifies terrain into distinct risk zones.
-
-### Overview 
-The project operates by calculating a scientific ground truth for soil loss based on five environmental factors. This data is then used to train a U-Net architecture—a convolutional neural network designed for semantic segmentation. Once trained, the model can identify high-risk areas from multispectral satellite data and topographic slope, providing an automated alternative to manual physics-based calculations.Technical MethodologyThe system quantifies soil loss ($A$) using the standard RUSLE formula:$$A = R*K*LS*C*P   
-
-R(Rainfall Erosivity): Derived from CHIRPS daily precipitation data to measure the kinetic energy of rainfall
-
-K (Soil Erodibility): Calculated from OpenLandMap soil texture classes, representing the susceptibility of soil particles to detachment.
-
-LS (Slope Length and Steepness): Generated from NASA’s SRTM Digital Elevation Model to account for topographic effects on runoff velocity.
-
-C (Cover Management): Calculated using the Normalized Difference Vegetation Index (NDVI) from Sentinel-2 imagery to evaluate how vegetation protects the soil surface.
-
-P (Support Practices): Evaluated as a constant in this implementation, assuming natural land management.To ensure accuracy, the model incorporates an environmental mask using the ESA WorldCover dataset to exclude non-soil surfaces such as urban infrastructure, permanent water bodies, and snow.
-## Run Instructions
-
-### Train the model
-python train.py
-
-### Predict erosion map
-python predict.py
-
-### Run using main menu
-python main.py
+### Level 3 Mitigation Advisory
+The system includes a targeted intervention feature. When critical (Red) zones are detected, the model:
+* Identifies the largest contiguous erosion cluster using center-of-mass calculations.
+* Drops a dynamic GPS marker on the interactive map.
+* Provides engineering recommendations (e.g., Gabion walls for steep slopes vs. riparian buffers for low slopes).
