@@ -12,7 +12,7 @@ import os
 # PROJECT SETUP
 # ==========================================
 MY_PROJECT = "gen-lang-client-0426799622"
-SIZE_METERS = 2750  # Creates a approximately 5.5km x 5.5km bounding box
+SIZE_METERS = 2750  # Creates an approximate 5.5km x 5.5km bounding box
 MODEL_PATH = "models/erosion_model_hybrid.pth"
 os.makedirs("models", exist_ok=True)
 
@@ -20,23 +20,65 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"System: Initializing neural network on {device}")
 
 # ==========================================
-# BALANCED TRAINING DATASET
-# Mix of stable regions and critical erosion hotspots
+# EXPANDED TRAINING DATASET (50 LOCATIONS)
+# Comprehensive representation of Maharashtra's topography
 # ==========================================
 LOCATIONS = [
-    # STABLE REGIONS
-    (19.93, 73.53),  # Nashik
-    (21.14, 79.08),  # Nagpur 
-    (16.99, 73.30),  # Ratnagiri
-    (20.93, 77.75),  # Amravati 
-    (19.87, 75.34),  # Chhatrapati Sambhajinagar 
-    
-    # EROSION HOTSPOTS
-    (19.16, 73.68),  # Malin Village 
-    (18.08, 73.42),  # Mahad 
-    (17.92, 73.56),  # Ambenali Ghat 
-    (19.33, 73.76),  # Malshej Ghat 
-    (17.38, 73.74),  # Patan / Koyna Catchment 
+    # --- EXTREME HOTSPOTS (Western Ghats, Landslides, Heavy Monsoon) ---
+    (19.16, 73.68),  # Malin Village (Landslide site)
+    (18.08, 73.42),  # Mahad (Severe river bank erosion)
+    (17.92, 73.56),  # Ambenali Ghat (Extreme vertical slopes)
+    (19.33, 73.76),  # Malshej Ghat (Heavy weathering)
+    (17.38, 73.74),  # Patan / Koyna Catchment (Deforestation)
+    (17.92, 73.65),  # Mahabaleshwar (Extreme rainfall)
+    (18.75, 73.40),  # Lonavala / Khandala Ghat
+    (18.45, 73.43),  # Tamhini Ghat (Highest rainfall zone)
+    (19.64, 73.47),  # Kasara Ghat
+    (19.70, 73.55),  # Igatpuri
+    (19.07, 73.53),  # Bhimashankar Scarp
+    (16.41, 73.99),  # Radhanagari (Heavy rain, soil piping)
+    (16.55, 73.82),  # Gaganbawda
+    (15.96, 74.00),  # Amboli Ghat
+    (19.60, 73.70),  # Kalsubai Peak Region
+    (19.38, 73.77),  # Harishchandragad slopes
+    (18.82, 73.39),  # Rajmachi slopes
+    (18.15, 73.60),  # Varandha Ghat
+    (18.98, 73.26),  # Matheran steep edges
+    (19.93, 73.53),  # Trimbakeshwar hills
+
+    # --- STABLE PLAINS & PLATEAUS (Agriculture, Flat terrain) ---
+    (21.14, 79.08),  # Nagpur
+    (20.93, 77.75),  # Amravati
+    (19.87, 75.34),  # Chhatrapati Sambhajinagar
+    (17.66, 75.90),  # Solapur
+    (18.40, 76.56),  # Latur
+    (19.26, 76.77),  # Parbhani
+    (19.83, 75.88),  # Jalna
+    (20.74, 78.60),  # Wardha
+    (20.38, 78.13),  # Yavatmal
+    (20.70, 77.00),  # Akola
+    (20.10, 77.14),  # Washim
+    (20.53, 76.18),  # Buldhana
+    (21.00, 75.56),  # Jalgaon
+    (20.90, 74.77),  # Dhule
+    (21.36, 74.24),  # Nandurbar
+    (19.15, 77.30),  # Nanded
+    (19.71, 77.14),  # Hingoli
+    (18.18, 76.04),  # Osmanabad
+    (18.98, 75.75),  # Beed
+    (19.09, 74.74),  # Ahmednagar
+
+    # --- MODERATE / COASTAL ZONES (Transition areas) ---
+    (16.99, 73.30),  # Ratnagiri (Coastal slopes)
+    (16.06, 73.46),  # Malvan / Sindhudurg
+    (18.64, 72.87),  # Alibag
+    (19.69, 72.76),  # Palghar
+    (19.97, 72.73),  # Dahanu
+    (18.15, 74.57),  # Baramati (Moderate agriculture)
+    (18.11, 75.01),  # Indapur
+    (17.67, 75.32),  # Pandharpur
+    (18.82, 74.38),  # Shirur
+    (19.61, 74.65),  # Shrirampur
 ]
 
 def initialize_ee():
@@ -48,7 +90,7 @@ def initialize_ee():
     print("System: Earth Engine Initialized.\n")
 
 def get_hybrid_training_data_batch():
-    print("Network: Fetching spatial data for 10 locations simultaneously. Please wait...")
+    print(f"Network: Fetching spatial data for {len(LOCATIONS)} locations. Initiating batch processing...")
 
     X_list, Y_unified_list = [], []
 
@@ -95,11 +137,8 @@ def get_hybrid_training_data_batch():
 
             soil_loss_2019 = R_2019.multiply(K_corrected).multiply(LS).multiply(C_2019)
             
-            # 4. THEORETICAL RUSLE (Razor-Thin Yellow, Expanded Red)
-            # Yellow band drastically squeezed to a 5-point margin (110-115).
-            # Red ceiling lowered to 115 to capture more high-risk terrain.
-            y_rusle = ee.Image(0).where(soil_loss_2019.gte(110).And(soil_loss_2019.lt(115)), 1) \
-                                 .where(soil_loss_2019.gte(115), 2)
+            # 4. THEORETICAL RUSLE
+            y_rusle = ee.Image(0).where(soil_loss_2019.gte(150).And(soil_loss_2019.lt(800)), 1)
 
             # 5. THE REALITY CHECK (2024 Data)
             s2_2024 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
@@ -111,16 +150,10 @@ def get_hybrid_training_data_batch():
 
             # 6. THE UNIFIED LABEL
             y_unified = ee.Image(0)
-            
-            # Base Vulnerability
-            y_unified = y_unified.where(y_rusle.gte(1), 1) 
-            
-            # Wildland Rule (Math high + relaxed 6% vegetation drop)
-            y_unified = y_unified.where(is_wild.And(y_rusle.eq(2)).And(ndvi_loss.gt(0.06)), 2)
-            
-            # Farmland Rule (Catastrophic math threshold lowered to 115)
-            y_unified = y_unified.where(is_farm.And(soil_loss_2019.gt(115)), 2)
-            
+            y_unified = y_unified.where(y_rusle.eq(1), 1) 
+            y_unified = y_unified.where(is_wild.And(soil_loss_2019.gte(150)).And(ndvi_loss.gt(0.15)), 2)
+            y_unified = y_unified.where(is_farm.And(soil_loss_2019.gte(800)), 2)
+            y_unified = y_unified.where(soil_loss_2019.gte(1000), 2)
             y_unified = y_unified.updateMask(valid_mask).unmask(0).rename('y_unified')
 
             # 7. STACK & DOWNLOAD
@@ -140,7 +173,8 @@ def get_hybrid_training_data_batch():
             print(f"Network: Error processing region {lat}, {lon} - {e}")
             return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Using 15 concurrent workers prevents API rate-limiting while maintaining speed
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         results = list(executor.map(process_location, LOCATIONS))
 
     for tensor in results:
@@ -148,12 +182,16 @@ def get_hybrid_training_data_batch():
             X_list.append(tensor[:, :5, :, :])
             Y_unified_list.append(tensor[:, 5, :, :].long())
 
+    if not X_list:
+        print("System Error: Failed to retrieve data for any locations.")
+        return None, None
+
     X_batch = torch.cat(X_list, dim=0).to(device)         
     Y_unified_batch = torch.cat(Y_unified_list, dim=0).to(device)
 
     unique, counts = torch.unique(Y_unified_batch, return_counts=True)
     pixel_counts = dict(zip(unique.tolist(), counts.tolist()))
-    print("\nSystem: PIXEL DISTRIBUTION IN TRAINING DATA:")
+    print("\nSystem: PIXEL DISTRIBUTION IN TRAINING DATA (50 REGIONS):")
     print(f"  Green (Stable): {pixel_counts.get(0, 0)} pixels")
     print(f"  Yellow (Vulnerable): {pixel_counts.get(1, 0)} pixels")
     print(f"  Red (Critical): {pixel_counts.get(2, 0)} pixels")
@@ -209,17 +247,20 @@ class FocalLoss(nn.Module):
 # TRAINING EXECUTION
 # ==========================================
 def train_unified_model(X, Y_unified):
+    if X is None or Y_unified is None:
+        print("System: Aborting training due to data retrieval failure.")
+        return
+
     model = MultiClassUNet(in_channels=5, num_classes=3).to(device)
     
-    # Adjusted weights: Added a 1.5x bias to Red to ensure confident classification 
-    # of danger zones now that the mathematical floor is significantly higher.
-    weights = torch.tensor([1.0, 0.5, 2], dtype=torch.float).to(device)
+    weights = torch.tensor([1.0, 1.0, 2.5], dtype=torch.float).to(device)
     
     criterion = FocalLoss(alpha=weights, gamma=2.0)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     
-    print("\nSystem: Commencing model training...")
-    for epoch in range(151): 
+    print("\nSystem: Commencing model training on full state dataset...")
+    # Increased epochs slightly to account for the larger dataset
+    for epoch in range(201): 
         optimizer.zero_grad()
         outputs = model(X)
         loss = criterion(outputs, Y_unified)
