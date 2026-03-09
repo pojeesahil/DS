@@ -8,9 +8,7 @@ import torch.nn.functional as F
 import concurrent.futures
 import os
 
-# ==========================================
-# PROJECT SETUP
-# ==========================================
+
 MY_PROJECT = "gen-lang-client-0426799622"
 SIZE_METERS = 2750  # Creates an approximate 5.5km x 5.5km bounding box
 MODEL_PATH = "models/erosion_model_hybrid.pth"
@@ -19,10 +17,7 @@ os.makedirs("models", exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"System: Initializing neural network on {device}")
 
-# ==========================================
-# EXPANDED TRAINING DATASET (50 LOCATIONS)
-# Comprehensive representation of Maharashtra's topography
-# ==========================================
+
 LOCATIONS = [
     # --- EXTREME HOTSPOTS (Western Ghats, Landslides, Heavy Monsoon) ---
     (19.16, 73.68),  # Malin Village (Landslide site)
@@ -198,9 +193,7 @@ def get_hybrid_training_data_batch():
 
     return X_batch, Y_unified_batch.squeeze(1)
 
-# ==========================================
 # U-NET ARCHITECTURE 
-# ==========================================
 class MultiClassUNet(nn.Module):
     def __init__(self, in_channels, num_classes):
         super(MultiClassUNet, self).__init__()
@@ -228,9 +221,7 @@ class MultiClassUNet(nn.Module):
         out = self.dec1(d1)
         return self.final(out)
 
-# ==========================================
 # FOCAL LOSS FUNCTION
-# ==========================================
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=2.0):
         super(FocalLoss, self).__init__()
@@ -243,9 +234,7 @@ class FocalLoss(nn.Module):
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
         return focal_loss.mean()
 
-# ==========================================
 # TRAINING EXECUTION
-# ==========================================
 def train_unified_model(X, Y_unified):
     if X is None or Y_unified is None:
         print("System: Aborting training due to data retrieval failure.")
